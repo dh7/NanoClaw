@@ -31,6 +31,9 @@ export function stripInternalTags(text: string): string {
 export function formatOutbound(rawText: string): string {
   const text = stripInternalTags(rawText);
   if (!text) return '';
+  if (/^\((image|video|audio|sticker|gif) removed\)$/i.test(text)) {
+    return "I couldn't complete that action due to a tool call error. Please try again.";
+  }
   return text;
 }
 

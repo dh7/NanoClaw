@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 
 import {
   ASSISTANT_NAME,
@@ -31,6 +32,7 @@ import {
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
+  clearSession,
   getMessageFromMe,
   getMessagesSince,
   getNewMessages,
@@ -69,6 +71,7 @@ let lastTimestamp = '';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
+let soulSignatureByChat: Record<string, string | undefined> = {};
 // Tracks cursor value before messages were piped to an active container.
 // Used to roll back if the container dies after piping.
 let cursorBeforePipe: Record<string, string> = {};
@@ -106,6 +109,28 @@ function saveState(): void {
   setRouterState('last_timestamp', lastTimestamp);
   setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
   setRouterState('cursor_before_pipe', JSON.stringify(cursorBeforePipe));
+}
+
+function groupHasSoulFile(group: RegisteredGroup): boolean {
+  try {
+    const soulPath = path.join(resolveGroupFolderPath(group.folder), 'SOUL.md');
+    if (fs.existsSync(soulPath)) return true;
+    const st = fs.lstatSync(soulPath);
+    return st.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function getGroupSoulSignature(group: RegisteredGroup): string | undefined {
+  try {
+    const soulPath = path.join(resolveGroupFolderPath(group.folder), 'SOUL.md');
+    if (!fs.existsSync(soulPath)) return undefined;
+    const content = fs.readFileSync(soulPath, 'utf-8');
+    return crypto.createHash('sha1').update(content).digest('hex');
+  } catch {
+    return undefined;
+  }
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
@@ -254,8 +279,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         typeof result.result === 'string'
           ? result.result
           : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+      const text = formatOutbound(raw);
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
         await channel.sendMessage(chatJid, text);
@@ -326,6 +350,7 @@ async function runAgent(
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
+  soulSignatureByChat[chatJid] = getGroupSoulSignature(group);
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -481,6 +506,22 @@ async function startMessageLoop(): Promise<void> {
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
           if (queue.sendMessage(chatJid, formatted)) {
+            // Preserve piped messaging for performance. Only restart the active
+            // run when SOUL.md changed so the latest personality is loaded.
+            const loadedSoul = soulSignatureByChat[chatJid];
+            const currentSoul = groupHasSoulFile(group)
+              ? getGroupSoulSignature(group)
+              : undefined;
+            if (loadedSoul !== currentSoul) {
+              logger.debug(
+                { chatJid, folder: group.folder },
+                'SOUL.md changed; restarting active container to reload soul',
+              );
+              queue.closeStdin(chatJid);
+              queue.enqueueMessageCheck(chatJid);
+              continue;
+            }
+
             logger.debug(
               { chatJid, count: messagesToSend.length },
               'Piped messages to active container',
@@ -780,6 +821,24 @@ async function main(): Promise<void> {
       for (const group of Object.values(registeredGroups)) {
         writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
       }
+    },
+    reloadSoul: async (jid) => {
+      const group = registeredGroups[jid];
+      if (!group) {
+        throw new Error(`No registered group for JID: ${jid}`);
+      }
+
+      delete sessions[group.folder];
+      clearSession(group.folder);
+      delete soulSignatureByChat[jid];
+
+      // Force any active run to end so next turn starts fresh
+      queue.closeStdin(jid);
+
+      logger.info(
+        { jid, folder: group.folder },
+        'Soul reload requested: cleared session and closed active container stdin',
+      );
     },
     statusHeartbeat: () => statusTracker.heartbeatCheck(),
     recoverPendingMessages,

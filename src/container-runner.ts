@@ -25,6 +25,7 @@ import {
   readonlyMountArgs,
   stopContainer,
 } from './container-runtime.js';
+import { readEnvFile } from './env.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
@@ -236,6 +237,19 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  const modelConfig = readEnvFile([
+    'NANOCLAW_MODEL',
+    'ANTHROPIC_MODEL',
+    'CLAUDE_CODE_MODEL',
+  ]);
+  const configuredModel =
+    modelConfig.NANOCLAW_MODEL ||
+    modelConfig.ANTHROPIC_MODEL ||
+    modelConfig.CLAUDE_CODE_MODEL;
+  if (configuredModel) {
+    args.push('-e', `NANOCLAW_MODEL=${configuredModel}`);
   }
 
   // Runtime-specific args for host gateway resolution
@@ -507,11 +521,7 @@ export async function runContainerAgent(
         // Full input is only included at verbose level to avoid
         // persisting user conversation content on every non-zero exit.
         if (isVerbose) {
-          logLines.push(
-            `=== Input ===`,
-            JSON.stringify(input, null, 2),
-            ``,
-          );
+          logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
         } else {
           logLines.push(
             `=== Input Summary ===`,

@@ -28,6 +28,7 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   onTasksChanged: () => void;
+  reloadSoul?: (jid: string) => Promise<void>;
   statusHeartbeat?: () => void;
   recoverPendingMessages?: () => void;
 }
@@ -99,6 +100,27 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'reload_soul' &&
+                data.chatJid &&
+                deps.reloadSoul
+              ) {
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  await deps.reloadSoul(data.chatJid);
+                  logger.info(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'IPC soul reload processed',
+                  );
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC soul reload attempt blocked',
                   );
                 }
               } else if (

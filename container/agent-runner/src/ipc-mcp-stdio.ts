@@ -102,6 +102,31 @@ server.tool(
 );
 
 server.tool(
+  'reload_soul',
+  'CRITICAL: Ada may evolve her own personality by editing her SOUL file carefully. The active SOUL file for this chat is `/workspace/group/SOUL.md` (in this setup it links to `/workspace/extra/vault/Ada/SOUL.md`). Ada should edit that file thoughtfully with clear purpose, values, and behavior guidelines. After any SOUL edit, call this tool immediately so the next user turn loads the updated soul. If no edit happened, do not call this tool.',
+  {},
+  async () => {
+    const data = {
+      type: 'reload_soul',
+      chatJid,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Soul reload requested. It will apply on the next user message.',
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools.
 

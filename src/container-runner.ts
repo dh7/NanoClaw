@@ -43,7 +43,6 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
-
 }
 
 export interface ContainerOutput {
@@ -253,6 +252,15 @@ function buildContainerArgs(
   if (configuredModel) {
     args.push('-e', `NANOCLAW_MODEL=${configuredModel}`);
   }
+
+  // Route Notion API through host credential proxy so containers never get
+  // real Notion tokens. The skill uses this base URL and a placeholder key.
+  args.push(
+    '-e',
+    `NOTION_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}/notion/v1`,
+  );
+  // Deliberately non-secret token; host proxy injects the real Notion key.
+  args.push('-e', 'NOTION_API_KEY=proxy_managed_token');
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());

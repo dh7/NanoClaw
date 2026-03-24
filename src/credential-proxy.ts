@@ -32,6 +32,9 @@ export function startCredentialProxy(
     'CLAUDE_CODE_OAUTH_TOKEN',
     'ANTHROPIC_AUTH_TOKEN',
     'ANTHROPIC_BASE_URL',
+    'NOTION_API_KEY',
+    'NOTION_API_TOKEN',
+    'NOTION_TOKEN',
   ]);
 
   const authMode: AuthMode = secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
@@ -46,15 +49,36 @@ export function startCredentialProxy(
 
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
+      const isNotionRequest = !!req.url?.startsWith('/notion/');
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
         const body = Buffer.concat(chunks);
 
+        const notionToken =
+          secrets.NOTION_API_KEY ||
+          secrets.NOTION_API_TOKEN ||
+          secrets.NOTION_TOKEN;
+
+        const notionUpstreamUrl = new URL('https://api.notion.com');
+        const notionIsHttps = notionUpstreamUrl.protocol === 'https:';
+        const notionMakeRequest = notionIsHttps ? httpsRequest : httpRequest;
+
+        const targetUpstreamUrl = isNotionRequest
+          ? notionUpstreamUrl
+          : upstreamUrl;
+        const targetIsHttps = isNotionRequest ? notionIsHttps : isHttps;
+        const targetMakeRequest = isNotionRequest
+          ? notionMakeRequest
+          : makeRequest;
+        const targetPath = isNotionRequest
+          ? (req.url || '/').replace(/^\/notion/, '')
+          : req.url;
+
         const headers: Record<string, string | number | string[] | undefined> =
           {
             ...(req.headers as Record<string, string>),
-            host: upstreamUrl.host,
+            host: targetUpstreamUrl.host,
             'content-length': body.length,
           };
 
@@ -63,28 +87,36 @@ export function startCredentialProxy(
         delete headers['keep-alive'];
         delete headers['transfer-encoding'];
 
-        if (authMode === 'api-key') {
-          // API key mode: inject x-api-key on every request
+        if (isNotionRequest) {
           delete headers['x-api-key'];
-          headers['x-api-key'] = secrets.ANTHROPIC_API_KEY;
+          delete headers['authorization'];
+          if (notionToken) {
+            headers['authorization'] = `Bearer ${notionToken}`;
+          }
         } else {
-          // OAuth mode: replace placeholder Bearer token with the real one
-          // only when the container actually sends an Authorization header
-          // (exchange request + auth probes). Post-exchange requests use
-          // x-api-key only, so they pass through without token injection.
-          if (headers['authorization']) {
-            delete headers['authorization'];
-            if (oauthToken) {
-              headers['authorization'] = `Bearer ${oauthToken}`;
+          if (authMode === 'api-key') {
+            // API key mode: inject x-api-key on every request
+            delete headers['x-api-key'];
+            headers['x-api-key'] = secrets.ANTHROPIC_API_KEY;
+          } else {
+            // OAuth mode: replace placeholder Bearer token with the real one
+            // only when the container actually sends an Authorization header
+            // (exchange request + auth probes). Post-exchange requests use
+            // x-api-key only, so they pass through without token injection.
+            if (headers['authorization']) {
+              delete headers['authorization'];
+              if (oauthToken) {
+                headers['authorization'] = `Bearer ${oauthToken}`;
+              }
             }
           }
         }
 
-        const upstream = makeRequest(
+        const upstream = targetMakeRequest(
           {
-            hostname: upstreamUrl.hostname,
-            port: upstreamUrl.port || (isHttps ? 443 : 80),
-            path: req.url,
+            hostname: targetUpstreamUrl.hostname,
+            port: targetUpstreamUrl.port || (targetIsHttps ? 443 : 80),
+            path: targetPath,
             method: req.method,
             headers,
           } as RequestOptions,
